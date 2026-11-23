@@ -3,7 +3,8 @@ import {handleRequest} from './worker.mjs';
 const port=Number(process.env.PORT || 3000);
 http.createServer(async(req,res)=>{
   try {
-    const request=new Request(new URL(req.url,'http://'+(req.headers.host||'localhost:'+port)),{method:req.method,headers:req.headers,...(['GET','HEAD'].includes(req.method)?{}:{body:req,duplex:'half'})});
+    const origin=process.env.RENDER_EXTERNAL_URL || 'http://'+(req.headers.host||'localhost:'+port);
+    const request=new Request(new URL(req.url,origin),{method:req.method,headers:req.headers,...(['GET','HEAD'].includes(req.method)?{}:{body:req,duplex:'half'})});
     const response=await handleRequest(request,process.env);
     res.writeHead(response.status,Object.fromEntries(response.headers));
     if(response.body) for await(const chunk of response.body) res.write(chunk);
