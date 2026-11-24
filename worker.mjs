@@ -876,7 +876,7 @@ export function queryFromMessages(messages) {
   const users = messages.filter(m => m.role === 'user').map(m => m.content);
   const last = users.at(-1) || '';
   const previous = messages.at(-2);
-  if (previous?.role === 'assistant' && (previous.content.includes('你对什么方向感兴趣') || previous.content.includes('再帮你缩小范围')) && !/报名|资格|作者|贡献|截止|材料|学分|srt|规则/i.test(last)) return '选题参考：' + (/学推/.test(previous.content) && !/挑战杯/.test(previous.content) ? '学推计划 ' : '') + last;
+  if (previous?.role === 'assistant' && (previous.content.includes('你对什么方向感兴趣') || previous.content.includes('再帮你缩小范围') || (users.length > 1 && /^(选题参考|学推计划项目|学推项目|往届项目推荐|历届项目推荐)[：:]?$/.test(normalize(users.at(-2))))) && !/报名|资格|作者|贡献|截止|材料|学分|srt|规则/i.test(last)) return '选题参考：' + (/学推/.test(users.at(-2) || '') && !/挑战杯/.test(users.at(-2) || '') ? '学推计划 ' : '') + last;
   // 仅对明显的追问沿用上轮主题，避免不同会话共享记忆。
   if (users.length > 1 && /^(那|这个|这种|他们|它|还|可以吗|多少|什么时候|为什么|怎么办)/.test(last)) {
     return users.at(-2).slice(0, 1000) + '\n追问：' + last;
@@ -978,14 +978,14 @@ export const SYSTEM_PROMPT = `你是清小挑，清华大学第44届清小挑。
 
 export async function answerWithModel(messages, env, fetcher = fetch) {
   const base = buildAnswer(queryFromMessages(messages));
-  if (base.mode === 'needs_source' || !base.cards.length || !env.LLM_BASE_URL || !env.LLM_API_KEY || !env.LLM_MODEL) return base;
+  if (!env.LLM_BASE_URL || !env.LLM_API_KEY || !env.LLM_MODEL) return base;
   try {
     const url = new URL(env.LLM_BASE_URL);
     if (url.protocol !== 'https:') throw new Error('https_required');
     const response = await fetcher(env.LLM_BASE_URL.replace(/\/$/,'')+'/chat/completions', {
       method:'POST', signal:AbortSignal.timeout(20000), headers:{'Authorization':'Bearer '+env.LLM_API_KEY,'Content-Type':'application/json'},
       body:JSON.stringify({model:env.LLM_MODEL,stream:false,temperature:0,max_tokens:1600,messages:[
-        {role:'system',content:SYSTEM_PROMPT+'\n当前日期（北京时间）：'+new Date().toLocaleDateString('sv-SE',{timeZone:'Asia/Shanghai'})+'\n可用证据：\n'+base.answer},
+        {role:'system',content:SYSTEM_PROMPT+'\n可热情、自然地多轮对话。关于竞赛规则、项目名称、年份和赛道，必须严格以提供的资料为准；学推计划项目不是挑战杯获奖项目，不得编造事实或项目。没有相关资料时诚实说明，可以追问用户兴趣。\n当前日期（北京时间）：'+new Date().toLocaleDateString('sv-SE',{timeZone:'Asia/Shanghai'})+'\n可用证据：\n'+base.answer},
         ...messages.filter(m=>m.role==='user'||m.role==='assistant').slice(-10),
       ]}),
     });
@@ -994,7 +994,7 @@ export async function answerWithModel(messages, env, fetcher = fetch) {
     const output=data.choices?.[0]?.message?.content;
     if(typeof output!=='string'||!output.trim()) throw new Error('empty_response');
     // 模型组织语言，完整可核对条款保留在同一回复中。
-    return {...base, answer:output+'\n\n——核对依据——\n'+base.answer, mode:'model'};
+    return {...base, answer:output+(base.cards.length || base.mode==='projects' ? '\n\n——资料参考——\n'+base.answer : ''), mode:'model'};
   } catch {
     return {...base, modelUnavailable:true}; // 不泄漏上游地址、错误正文或密钥。
   }
@@ -1017,7 +1017,7 @@ export const HTML = String.raw`<!doctype html>
 <form class="composer" id="form"><label for="question" class="small">你的问题</label><textarea id="question" maxlength="4000" placeholder="例如：我的项目去年参加过，今年有重大改进，可以再次参赛吗？" required></textarea><div class="composer-bottom"><span class="hint">Enter发送 · Shift + Enter换行</span><button type="submit" class="send" id="send">发送</button></div></form>
 <div class="status" id="status" role="status"></div><div class="below">仅依据已收录资料答疑 · 不代表组委会裁定 · 不保存对话内容</div>
 <div class="foot"><button class="ghost" id="sources-button" aria-expanded="false" aria-controls="sources">查看资料与范围</button><button class="ghost" id="clear">清空对话</button></div>
-<section class="source-panel" id="sources" hidden><h2>资料与回答范围</h2><p>往届项目来源：用户提供的《清华大学挑战杯第41-44届获奖项目汇总》，共138项，其中第41—43届各6项，第44届120项，非全部往届项目。学推计划项目来源：用户提供的《学推计划项目汇总》，收录2023—2026年共1347项；该资料与挑战杯获奖项目分别展示。<br>规则来源：用户提供的《关于举办清华大学第四十四届“挑战杯”学生课外学术科技作品竞赛的通知》，落款2025年11月18日。未独立核验原始文件。</p><h3>已收录</h3><p>作品要求、学科类型、申报途径、作者贡献、报名通知中的赛程、评审流程、材料清单、SRT与民生赛道。</p><h3>尚未收录</h3><p>附件1—7正文与下载链接、章程及评奖办法的具体内容、后续赛程调整和终审细则、其他届次规则。</p><h3>回答方式</h3><p>网页使用通知条款检索，不调用收费大模型。清小搭标准接口可在配置服务端模型后增加语言理解能力。简短追问会参考本次对话的上一个问题；对话只保留在当前网页内存中，刷新即清除。</p></section>
+<section class="source-panel" id="sources" hidden><h2>资料与回答范围</h2><p>往届项目来源：用户提供的《清华大学挑战杯第41-44届获奖项目汇总》，共138项，其中第41—43届各6项，第44届120项，非全部往届项目。学推计划项目来源：用户提供的《学推计划项目汇总》，收录2023—2026年共1347项；该资料与挑战杯获奖项目分别展示。<br>规则来源：用户提供的《关于举办清华大学第四十四届“挑战杯”学生课外学术科技作品竞赛的通知》，落款2025年11月18日。未独立核验原始文件。</p><h3>已收录</h3><p>作品要求、学科类型、申报途径、作者贡献、报名通知中的赛程、评审流程、材料清单、SRT与民生赛道。</p><h3>尚未收录</h3><p>附件1—7正文与下载链接、章程及评奖办法的具体内容、后续赛程调整和终审细则、其他届次规则。</p><h3>回答方式</h3><p>已配置时会调用大模型帮助理解问题和组织回答，并参考所收录的资料；模型不可用时使用资料检索。对话内容会发送至模型服务商处理，请勿输入敏感信息。</p></section>
 <footer>清华清小挑 · 第44届资料版</footer></div></main></div>
 <script>
 const history=[]; const chat=document.getElementById('chat');const input=document.getElementById('question');const send=document.getElementById('send');const status=document.getElementById('status');let busy=false;
@@ -1079,7 +1079,7 @@ export async function handleRequest(request,env={}){
   let body;try{body=await readBody(request);}catch(e){return error(e.message||'无效请求。',e.status||400,'invalid_body');}
   const invalid=validateBody(body);if(invalid)return error(invalid,400,'invalid_request');
   // 接入向导的最小探测应快速完成，不依赖外部模型的网络延迟。
-  const result=(web||body.max_tokens===1)?buildAnswer(queryFromMessages(body.messages)):await answerWithModel(body.messages,env);
+  const result=body.max_tokens===1?buildAnswer(queryFromMessages(body.messages)):await answerWithModel(body.messages,env);
   const sources=result.cards.map(c=>({id:c.id,title:c.title,section:c.section,source_date:SOURCE.date}));
   if(web)return json({answer:result.answer,sources,mode:result.mode,edition:44});
   let output=result.answer;let reason='stop';
