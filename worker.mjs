@@ -876,6 +876,7 @@ export function queryFromMessages(messages) {
   const users = messages.filter(m => m.role === 'user').map(m => m.content);
   const last = users.at(-1) || '';
   const previous = messages.at(-2);
+  if (previous?.role === 'assistant' && users.length > 1 && last.length <= 24 && /机器人|医疗|医学|人工智能|机器学习|环境|能源|电池|材料|社会|教育|航天|农业/.test(last) && !/老师|导师|报名|规则|学分/.test(last)) return '选题参考：' + last;
   if (previous?.role === 'assistant' && (previous.content.includes('你对什么方向感兴趣') || previous.content.includes('再帮你缩小范围') || (users.length > 1 && /(?:选题|学推项目|往届项目推荐|历届项目推荐)/.test(normalize(users.at(-2))) && /方向|领域|兴趣|喜欢/.test(previous.content))) && !/报名|资格|作者|贡献|截止|材料|学分|srt|规则|老师|导师|无关|没关系|不对/i.test(last)) return '选题参考：' + (/只看学推|仅看学推/.test(users.at(-2) || '') ? '只看学推 ' : '') + last;
   // 仅对明显的追问沿用上轮主题，避免不同会话共享记忆。
   if (users.length > 1 && /^(那|这个|这种|他们|它|还|可以吗|多少|什么时候|为什么|怎么办)/.test(last)) {
@@ -944,6 +945,7 @@ export function recommendProjects(query) {
     let score=0;
     for (const term of expanded) for (const [field, weight] of fields) if(normalize(String(p[field] || '')).includes(term)) {score+=term.length*weight*(terms.includes(term)?5:1); break;}
     for (const term of fragments) if (normalize(p.title).includes(term)) score += term.length * 3;
+    if (/医疗|医学|血管|介入|手术|康复/.test(query) && /机器人/.test(query) && /医疗|医用|血管|介入|手术|康复/.test(p.title) && /机器人/.test(p.title)) score += 90;
     return {p,index,score};
   }).filter(x=>x.score>0).sort((a,b)=>b.score-a.score || a.index-b.index);
   const studyOnly = /(?:只看|仅看|只要|仅限).{0,4}学推/.test(query), cupOnly = /(?:只看|仅看|只要|仅限).{0,4}挑战杯/.test(query);
@@ -963,7 +965,7 @@ export function buildAnswer(query, now = new Date()) {
   if (/老师|导师|指导教师|指导老师/.test(q)) return {answer:'你想了解相关方向的老师呀！我目前收录的资料没有可靠的教师及研究方向信息，暂时不能直接推荐具体老师。可以通过清华大学院系和实验室官网，按你的研究方向查找教师主页并核实研究内容。',cards:[],mode:'needs_source'};
   if (/没什么关系|不相关|答非所问|不对|不是我想/.test(q)) return {answer:'抱歉，刚才没有理解你的问题。你希望我重点回答哪一部分？我会根据你的问题重新整理。',cards:[],mode:'needs_source'};
   if (/^(选题参考|往届项目推荐|历届项目推荐|学推计划项目|学推项目|挑战杯选题)[：:]?$/.test(q)) return {answer:'嗨嗨！你对什么方向感兴趣呀？告诉清小挑一两个关键词，比如人工智能、机器人、环境或医疗，我来帮你找找挑战杯选题参考～',cards:[],mode:'projects_prompt'};
-  if (/^选题参考[：:]/.test(q) || /学推/.test(q) || /选题/.test(q) || (/(项目)/.test(q) && /(往届|历届|推荐|感兴趣|寻找|查找|搜索)/.test(q)) || /我(?:对|喜欢).{2,}(?:感兴趣|有兴趣)/.test(q)) return recommendProjects(query);
+  if (/^选题参考[：:]/.test(q) || /学推/.test(q) || /选题/.test(q) || (/(项目)/.test(q) && /(往届|历届|推荐|感兴趣|寻找|查找|搜索)/.test(q)) || /我(?:对|喜欢).{2,}(?:感兴趣|有兴趣)/.test(q) || (/(?:想做|想研究|感兴趣|喜欢|想了解)/.test(q) && /机器人|医疗|医学|人工智能|机器学习|环境|能源|电池|材料|社会|教育|航天|农业/.test(q))) return recommendProjects(query);
   const scope = '来啦，让清小挑帮你看看～\n依据：清华大学第44届“挑战杯”报名通知（2025-11-18，2025—2026赛季）。';
   if (/第?(45|四十五)届|2027|今年|本届|最新|现在|目前|当下/.test(q) && !/44|四十四|2025/.test(q)) {
     return { answer: scope + '\n\n当前仅收录第44届报名通知，不能确认你问的当前届次或最新安排。请提供对应届次的通知；不能把第44届的旧日期当作当前报名安排。', cards:[], mode:'needs_source' };
@@ -1004,7 +1006,7 @@ export async function answerWithModel(messages, env, fetcher = fetch) {
     const output=data.choices?.[0]?.message?.content;
     if(typeof output!=='string'||!output.trim()) { console.warn('Model response metadata:', JSON.stringify({finish_reason:data.choices?.[0]?.finish_reason || null, has_reasoning:!!data.choices?.[0]?.message?.reasoning_content, completion_tokens:data.usage?.completion_tokens ?? null})); throw new Error('empty_response'); }
     // 模型组织语言，完整可核对条款保留在同一回复中。
-    return {...base, answer:output+(base.cards.length || base.mode==='projects' ? '\n\n——资料参考——\n'+base.answer : ''), mode:'model'};
+    return {...base, answer:output, mode:'model'};
   } catch (error) {
     console.warn('Model call failed:', error.name === 'TimeoutError' ? 'timeout' : error.message === 'upstream_failed' ? 'upstream' : error.message === 'empty_response' ? 'empty response' : 'connection');
     return {...base, answer:'抱歉，我暂时无法连接智能对话服务，下面是资料库的基础查询结果：\n\n'+base.answer, modelUnavailable:true}; // 不泄漏上游地址、错误正文或密钥。
