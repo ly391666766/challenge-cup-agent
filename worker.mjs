@@ -876,7 +876,7 @@ export function queryFromMessages(messages) {
   const users = messages.filter(m => m.role === 'user').map(m => m.content);
   const last = users.at(-1) || '';
   const previous = messages.at(-2);
-  if (previous?.role === 'assistant' && (previous.content.includes('你对什么方向感兴趣') || previous.content.includes('再帮你缩小范围') || (users.length > 1 && /(?:选题|学推项目|往届项目推荐|历届项目推荐)/.test(normalize(users.at(-2))) && /方向|领域|兴趣|喜欢/.test(previous.content))) && !/报名|资格|作者|贡献|截止|材料|学分|srt|规则/i.test(last)) return '选题参考：' + (/只看学推|仅看学推/.test(users.at(-2) || '') ? '只看学推 ' : '') + last;
+  if (previous?.role === 'assistant' && (previous.content.includes('你对什么方向感兴趣') || previous.content.includes('再帮你缩小范围') || (users.length > 1 && /(?:选题|学推项目|往届项目推荐|历届项目推荐)/.test(normalize(users.at(-2))) && /方向|领域|兴趣|喜欢/.test(previous.content))) && !/报名|资格|作者|贡献|截止|材料|学分|srt|规则|老师|导师|无关|没关系|不对/i.test(last)) return '选题参考：' + (/只看学推|仅看学推/.test(users.at(-2) || '') ? '只看学推 ' : '') + last;
   // 仅对明显的追问沿用上轮主题，避免不同会话共享记忆。
   if (users.length > 1 && /^(那|这个|这种|他们|它|还|可以吗|多少|什么时候|为什么|怎么办)/.test(last)) {
     return users.at(-2).slice(0, 1000) + '\n追问：' + last;
@@ -931,18 +931,25 @@ const interestGroups = [
   ['航天','航空','飞行'], ['民生','消防','安全']
 ];
 export function recommendProjects(query) {
-  const cleaned = normalize(query).replace(/选题参考|往届项目|历届项目|项目推荐|推荐项目|学推计划|学推|请问|我想|我对|我喜欢|感兴趣|方向|相关|项目|选题|参考|推荐|有没有|有哪些|挑战杯|往届|历届|关于|的|和|与|、|，|。|：|:|？|\?|\s/g, ' ');
+  const cleaned = normalize(query).replace(/选题参考|往届项目|历届项目|项目推荐|推荐项目|学推计划|学推|清华大学|清华|请问|我想|我对|我喜欢|感兴趣|比较|方向|相关|项目|选题|参考|推荐|有没有|有哪些|挑战杯|往届|历届|关于|的|和|与|、|，|。|：|:|？|\?|\s/g, ' ');
   const terms = cleaned.split(/[^\p{L}\p{N}]+/u).filter(t => t.length >= 2);
+  const fragments = new Set();
+  for (const term of terms) if (/^[\u4e00-\u9fff]+$/.test(term) && term.length > 3) {
+    for (let size = 3; size <= Math.min(6, term.length); size++)
+      for (let start = 0; start + size <= term.length; start++) fragments.add(term.slice(start, start + size));
+  }
   const expanded = new Set(terms);
   for (const group of interestGroups) if (group.some(t => normalize(query).includes(t) || terms.some(q => q.includes(t) || t.includes(q)))) group.forEach(t => expanded.add(t));
   const rank = (items, fields) => items.map((p,index) => {
     let score=0;
     for (const term of expanded) for (const [field, weight] of fields) if(normalize(String(p[field] || '')).includes(term)) {score+=term.length*weight*(terms.includes(term)?5:1); break;}
+    for (const term of fragments) if (normalize(p.title).includes(term)) score += term.length * 3;
     return {p,index,score};
   }).filter(x=>x.score>0).sort((a,b)=>b.score-a.score || a.index-b.index);
   const studyOnly = /(?:只看|仅看|只要|仅限).{0,4}学推/.test(query), cupOnly = /(?:只看|仅看|只要|仅限).{0,4}挑战杯/.test(query);
-  const cup = studyOnly ? [] : rank(PROJECTS,[['title',3],['track',2]]).slice(0,5);
-  const study = cupOnly ? [] : rank(STUDY_PROJECTS,[['title',3]]).slice(0,5);
+  const selectRelevant = ranked => ranked.filter(item => item.score >= ranked[0].score * 0.4).slice(0,5);
+  const cup = studyOnly ? [] : selectRelevant(rank(PROJECTS,[['title',3],['track',2]]));
+  const study = cupOnly ? [] : selectRelevant(rank(STUDY_PROJECTS,[['title',3]]));
   if (!cup.length && !study.length) return {answer:'唔，还没有找到和这个方向匹配的项目～可以换个更具体的词试试，比如深度学习、机器人、环境或电池，我再帮你找找！',cards:[],mode:'projects'};
   const sections=[];
   if(cup.length) sections.push('挑战杯获奖项目参考\n'+cup.map(({p},i)=>`${i+1}. ${p.title}（来源：${p.edition}挑战杯，${p.year}年，${p.track}）`).join('\n'));
@@ -953,6 +960,8 @@ export function recommendProjects(query) {
 
 export function buildAnswer(query, now = new Date()) {
   const q = normalize(query);
+  if (/老师|导师|指导教师|指导老师/.test(q)) return {answer:'你想了解相关方向的老师呀！我目前收录的资料没有可靠的教师及研究方向信息，暂时不能直接推荐具体老师。可以通过清华大学院系和实验室官网，按你的研究方向查找教师主页并核实研究内容。',cards:[],mode:'needs_source'};
+  if (/没什么关系|不相关|答非所问|不对|不是我想/.test(q)) return {answer:'抱歉，刚才没有理解你的问题。你希望我重点回答哪一部分？我会根据你的问题重新整理。',cards:[],mode:'needs_source'};
   if (/^(选题参考|往届项目推荐|历届项目推荐|学推计划项目|学推项目|挑战杯选题)[：:]?$/.test(q)) return {answer:'嗨嗨！你对什么方向感兴趣呀？告诉清小挑一两个关键词，比如人工智能、机器人、环境或医疗，我来帮你找找挑战杯选题参考～',cards:[],mode:'projects_prompt'};
   if (/^选题参考[：:]/.test(q) || /学推/.test(q) || /选题/.test(q) || (/(项目)/.test(q) && /(往届|历届|推荐|感兴趣|寻找|查找|搜索)/.test(q)) || /我(?:对|喜欢).{2,}(?:感兴趣|有兴趣)/.test(q)) return recommendProjects(query);
   const scope = '来啦，让清小挑帮你看看～\n依据：清华大学第44届“挑战杯”报名通知（2025-11-18，2025—2026赛季）。';
@@ -984,8 +993,8 @@ export async function answerWithModel(messages, env, fetcher = fetch) {
     const url = new URL(env.LLM_BASE_URL);
     if (url.protocol !== 'https:') throw new Error('https_required');
     const response = await fetcher(env.LLM_BASE_URL.replace(/\/$/,'')+'/chat/completions', {
-      method:'POST', signal:AbortSignal.timeout(20000), headers:{'Authorization':'Bearer '+env.LLM_API_KEY,'Content-Type':'application/json'},
-      body:JSON.stringify({model:env.LLM_MODEL,stream:false,temperature:0,max_tokens:1600,messages:[
+      method:'POST', signal:AbortSignal.timeout(60000), headers:{'Authorization':'Bearer '+env.LLM_API_KEY,'Content-Type':'application/json'},
+      body:JSON.stringify({model:env.LLM_MODEL,stream:false,temperature:0,max_tokens:4096,messages:[
         {role:'system',content:SYSTEM_PROMPT+'\n可热情、自然地多轮对话。关于竞赛规则、项目名称、年份和赛道，必须严格以提供的资料为准；学推计划项目不是挑战杯获奖项目，不得编造事实或项目。没有相关资料时诚实说明，可以追问用户兴趣。\n当前日期（北京时间）：'+new Date().toLocaleDateString('sv-SE',{timeZone:'Asia/Shanghai'})+'\n可用证据：\n'+base.answer},
         ...messages.filter(m=>m.role==='user'||m.role==='assistant').slice(-10),
       ]}),
@@ -993,12 +1002,12 @@ export async function answerWithModel(messages, env, fetcher = fetch) {
     if (!response.ok) { console.warn('Model provider HTTP status:', response.status); throw new Error('upstream_failed'); }
     const data=await response.json();
     const output=data.choices?.[0]?.message?.content;
-    if(typeof output!=='string'||!output.trim()) throw new Error('empty_response');
+    if(typeof output!=='string'||!output.trim()) { console.warn('Model response metadata:', JSON.stringify({finish_reason:data.choices?.[0]?.finish_reason || null, has_reasoning:!!data.choices?.[0]?.message?.reasoning_content, completion_tokens:data.usage?.completion_tokens ?? null})); throw new Error('empty_response'); }
     // 模型组织语言，完整可核对条款保留在同一回复中。
     return {...base, answer:output+(base.cards.length || base.mode==='projects' ? '\n\n——资料参考——\n'+base.answer : ''), mode:'model'};
   } catch (error) {
     console.warn('Model call failed:', error.name === 'TimeoutError' ? 'timeout' : error.message === 'upstream_failed' ? 'upstream' : error.message === 'empty_response' ? 'empty response' : 'connection');
-    return {...base, modelUnavailable:true}; // 不泄漏上游地址、错误正文或密钥。
+    return {...base, answer:'抱歉，我暂时无法连接智能对话服务，下面是资料库的基础查询结果：\n\n'+base.answer, modelUnavailable:true}; // 不泄漏上游地址、错误正文或密钥。
   }
 }
 
