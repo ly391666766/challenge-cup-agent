@@ -989,13 +989,14 @@ export async function answerWithModel(messages, env, fetcher = fetch) {
         ...messages.filter(m=>m.role==='user'||m.role==='assistant').slice(-10),
       ]}),
     });
-    if (!response.ok) throw new Error('upstream_failed');
+    if (!response.ok) { console.warn('Model provider HTTP status:', response.status); throw new Error('upstream_failed'); }
     const data=await response.json();
     const output=data.choices?.[0]?.message?.content;
     if(typeof output!=='string'||!output.trim()) throw new Error('empty_response');
     // 模型组织语言，完整可核对条款保留在同一回复中。
     return {...base, answer:output+(base.cards.length || base.mode==='projects' ? '\n\n——资料参考——\n'+base.answer : ''), mode:'model'};
-  } catch {
+  } catch (error) {
+    console.warn('Model call failed:', error.name === 'TimeoutError' ? 'timeout' : error.message === 'upstream_failed' ? 'upstream' : error.message === 'empty_response' ? 'empty response' : 'connection');
     return {...base, modelUnavailable:true}; // 不泄漏上游地址、错误正文或密钥。
   }
 }
