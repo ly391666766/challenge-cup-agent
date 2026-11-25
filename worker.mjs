@@ -1013,6 +1013,53 @@ export async function answerWithModel(messages, env, fetcher = fetch) {
   }
 }
 
+// 以 OpenAI SSE 格式逐句转发模型内容；句子缓冲用于过滤分片中的邮箱与星号。
+export function streamAnswer(messages, env, maxTokens, fetcher = fetch) {
+  const base = buildAnswer(queryFromMessages(messages));
+  const id = 'chatcmpl-'+crypto.randomUUID(), created = Math.floor(Date.now()/1000);
+  const encoder = new TextEncoder();
+  const safe = text => text.replace(/\\\*/g,'').replace(/\*/g,'').replace(/[^。！？\n]*(?:联系|咨询|请向|建议向|发送至|邮箱)[^。！？\n]*kexie@mail\.tsinghua\.edu\.cn[^。！？\n]*[。！？]?/gi,'').replace(/kexie@mail\.tsinghua\.edu\.cn/gi,'相关报名渠道');
+  const stream = new ReadableStream({async start(controller) {
+    let delivered = 0, pending = '', finished = false;
+    const emit = (delta, reason = null) => controller.enqueue(encoder.encode('data: '+JSON.stringify({id,object:'chat.completion.chunk',created,model:MODEL_ID,choices:[{index:0,delta,finish_reason:reason}]})+'\n\n'));
+    const send = value => { const chars = Array.from(safe(value)); const allowed = maxTokens ? chars.slice(0,Math.max(0,maxTokens-delivered)) : chars; if (allowed.length) {emit({content:allowed.join('')}); delivered += allowed.length;} if(maxTokens && delivered >= maxTokens) finished=true; };
+    emit({role:'assistant'});
+    try {
+      if (!env.LLM_BASE_URL || !env.LLM_API_KEY || !env.LLM_MODEL) throw new Error('not_configured');
+      if (new URL(env.LLM_BASE_URL).protocol !== 'https:') throw new Error('https_required');
+      const response = await fetcher(env.LLM_BASE_URL.replace(/\/$/,'')+'/chat/completions', {
+        method:'POST', signal:AbortSignal.timeout(60000), headers:{Authorization:'Bearer '+env.LLM_API_KEY,'Content-Type':'application/json'},
+        body:JSON.stringify({model:env.LLM_MODEL,stream:true,temperature:0,max_tokens:4096,messages:[
+          {role:'system',content:SYSTEM_PROMPT+'\n可热情、自然地多轮对话。比赛规则、项目名称、年份和赛道以资料为准，学推项目不是挑战杯获奖项目。没有相关资料时诚实说明。\n当前日期（北京时间）：'+new Date().toLocaleDateString('sv-SE',{timeZone:'Asia/Shanghai'})+'\n可用证据：\n'+base.answer},
+          ...messages.filter(m=>m.role==='user'||m.role==='assistant').slice(-10)
+        ]})
+      });
+      if (!response.ok || !response.body) throw new Error('upstream_failed');
+      const reader=response.body.getReader(), decoder=new TextDecoder(); let wire='', done=false;
+      try {
+        while(!done && !finished) {
+          const part=await reader.read(); done=part.done; wire+=decoder.decode(part.value||new Uint8Array(),{stream:!done});
+          const lines=wire.split('\n'); wire=lines.pop();
+          for(const line of lines){ if(!line.startsWith('data:'))continue; const data=line.slice(5).trim(); if(!data||data==='[DONE]')continue;
+            let event;try{event=JSON.parse(data);}catch{continue;}
+            const chunk=event.choices?.[0]?.delta?.content; if(typeof chunk!=='string')continue;
+            pending+=chunk; const end=Math.max(pending.lastIndexOf('。'),pending.lastIndexOf('！'),pending.lastIndexOf('？'),pending.lastIndexOf('\n'));
+            if(end>=0){send(pending.slice(0,end+1));pending=pending.slice(end+1);} if(finished)break;
+          }
+        }
+        if(!finished && pending)send(pending);
+      } finally { if(finished) await reader.cancel().catch(()=>{}); }
+      if(!delivered)throw new Error('empty_response');
+    } catch(error) {
+      console.warn('Model streaming failed:', error.name==='TimeoutError'?'timeout':error.message==='upstream_failed'?'upstream':'connection');
+      if(!delivered)send('抱歉，智能对话服务暂时没有响应，下面是资料库的基础查询结果：\n\n'+base.answer);
+      else if(!finished)send('\n\n抱歉，回答中途连接中断，请重试。');
+    }
+    emit({},finished?'length':'stop'); controller.enqueue(encoder.encode('data: [DONE]\n\n')); controller.close();
+  }});
+  return new Response(stream,{headers:{...safeHeaders,'Content-Type':'text/event-stream; charset=utf-8','X-Accel-Buffering':'no'}});
+}
+
 
 export const HTML = String.raw`<!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>清华清小挑 · 第44届</title>
@@ -1091,6 +1138,7 @@ export async function handleRequest(request,env={}){
   if(!rateLimit(request))return error('请求较多，请一分钟后重试。',429,'rate_limited');
   let body;try{body=await readBody(request);}catch(e){return error(e.message||'无效请求。',e.status||400,'invalid_body');}
   const invalid=validateBody(body);if(invalid)return error(invalid,400,'invalid_request');
+  if(api && body.stream===true && body.max_tokens!==1) return streamAnswer(body.messages,env,body.max_tokens);
   // 接入向导的最小探测应快速完成，不依赖外部模型的网络延迟。
   const result=body.max_tokens===1?buildAnswer(queryFromMessages(body.messages)):await answerWithModel(body.messages,env);
   const sources=[...result.cards.map(c=>({id:c.id,title:c.title,section:c.section,source_date:SOURCE.date})),...(result.references||[])];
